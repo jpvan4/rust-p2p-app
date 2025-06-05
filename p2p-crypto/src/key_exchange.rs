@@ -3,7 +3,9 @@ use crate::{KeyMaterial, KeyType, P2PError, P2PResult};
 
 /// Generate an ephemeral X25519 key pair
 pub fn generate_keypair() -> (EphemeralSecret, PublicKey) {
+
     let secret = EphemeralSecret::random_from_rng(rand::rngs::OsRng);
+
     let public = PublicKey::from(&secret);
     (secret, public)
 }

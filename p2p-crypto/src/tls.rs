@@ -272,6 +272,7 @@ fn create_server_config(
     security_config: &SecurityConfig,
 ) -> P2PResult<ServerConfig> {
     let builder = ServerConfig::builder().with_safe_defaults();
+
     let builder = if security_config.require_mtls {
         let ca_path = ca_cert_path.ok_or_else(|| P2PError::Tls("mTLS requires CA certificate".into()))?;
         let ca_certs = load_certificates(ca_path)?;
@@ -281,11 +282,11 @@ fn create_server_config(
                 .map_err(|e| P2PError::Tls(format!("Failed to add CA certificate: {}", e)))?;
         }
         builder.with_client_cert_verifier(
-            Arc::new(rustls::server::AllowAnyAuthenticatedClient::new(root_store))
         )
     } else {
         builder.with_no_client_auth()
     };
+
     let server_config = builder.with_single_cert(cert_chain, private_key)
         .map_err(|e| P2PError::Tls(format!("Failed to configure server certificate: {}", e)))?;
     Ok(server_config)
@@ -306,6 +307,7 @@ fn create_client_config(
             ta.name_constraints,
         )
     }));
+
     // Add custom CA certificates if provided
     if let Some(ca_path) = ca_cert_path {
         let ca_certs = load_certificates(ca_path)?;
@@ -314,15 +316,14 @@ fn create_client_config(
                 .map_err(|e| P2PError::Tls(format!("Failed to add CA certificate: {}", e)))?;
         }
     }
-    let builder = ClientConfig::builder()
-        .with_safe_defaults()
-        .with_root_certificates(root_store);
+
     let config = if security_config.require_mtls {
         builder.with_client_auth_cert(cert_chain, private_key)
             .map_err(|e| P2PError::Tls(format!("Failed to configure client certificate: {}", e)))?
     } else {
         builder.with_no_client_auth()
     };
+
     Ok(config)
 }
 /// Get cipher suites from configuration
@@ -340,6 +341,7 @@ static PROTO_ALL: [&'static rustls::SupportedProtocolVersion; 2] = [
 static PROTO_13: [&'static rustls::SupportedProtocolVersion; 1] = [
     &rustls::version::TLS13,
 ];
+
 fn get_protocol_versions(min_version: TlsVersion) -> &'static [&'static rustls::SupportedProtocolVersion] {
     match min_version {
         TlsVersion::V1_2 => &PROTO_ALL,

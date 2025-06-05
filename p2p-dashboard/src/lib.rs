@@ -1,4 +1,5 @@
-use actix_web::{web, App, HttpServer, Responder};
+use actix_web::{web, App, HttpServer, Responder, HttpResponse};
+
 use p2p_network::NetworkManager;
 use std::sync::Arc;
 
@@ -19,6 +20,8 @@ impl DashboardServer {
         HttpServer::new(move || {
             App::new()
                 .app_data(web::Data::new(data.clone()))
+                .route("/", web::get().to(index))
+
                 .route("/peers", web::get().to(get_peers))
         })
         .bind(&self.address)?
@@ -32,4 +35,12 @@ async fn get_peers(network: web::Data<Arc<NetworkManager>>) -> impl Responder {
     let list: Vec<String> = peers.keys().map(|p| p.to_string()).collect();
     web::Json(list)
 }
+
+
+async fn index() -> impl Responder {
+    HttpResponse::Ok()
+        .content_type("text/html")
+        .body("<h1>P2P Dashboard</h1>")
+}
+
 
