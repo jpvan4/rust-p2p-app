@@ -1,0 +1,39 @@
+[package]
+name = "p2p-crypto"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+# Core dependencies
+serde = { workspace = true }
+serde_json = { workspace = true }
+uuid = { workspace = true }
+log = { workspace = true }
+anyhow = { workspace = true }
+thiserror = { workspace = true }
+
+# Cryptographic dependencies
+ring = { workspace = true }
+ed25519-dalek = { workspace = true }
+aes-gcm = { workspace = true }
+sha2 = { workspace = true }
+
+# Additional crypto dependencies
+rand = "0.8"
+zeroize = "1.6"
+argon2 = "0.5"
+x25519-dalek = "2.0"
+chacha20poly1305 = "0.10"
+
+# TLS support
+rustls = "0.21"
+rustls-pemfile = "1.0"
+tokio-rustls = "0.24"
+
+# Certificate handling
+rcgen = "0.11"
+webpki-roots = "0.25"
+
+# Local dependencies
+p2p-core = { path = "../p2p-core" }
+

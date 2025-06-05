@@ -1,0 +1,25 @@
+[package]
+name = "p2p-network"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+tokio = { workspace = true }
+libp2p = { workspace = true }
+quinn = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+uuid = { workspace = true }
+log = { workspace = true }
+anyhow = { workspace = true }
+thiserror = { workspace = true }
+futures = { workspace = true }
+p2p-core = { path = "../p2p-core" }
+p2p-crypto = { path = "../p2p-crypto" }
+
+# Additional networking dependencies
+async-trait = { workspace = true }
+dashmap = { workspace = true }
+parking_lot = { workspace = true }
+rand = "0.8"
+
