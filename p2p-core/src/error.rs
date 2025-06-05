@@ -17,6 +17,12 @@ pub enum P2PError {
     
     #[error("File system error: {0}")]
     FileSystem(String),
+
+    #[error("TLS error: {0}")]
+    Tls(String),
+
+    #[error("I/O error: {0}")]
+    Io(String),
     
     #[error("Authentication failed: {0}")]
     Authentication(String),
@@ -44,7 +50,7 @@ pub type P2PResult<T> = Result<T, P2PError>;
 
 impl From<std::io::Error> for P2PError {
     fn from(err: std::io::Error) -> Self {
-        P2PError::FileSystem(err.to_string())
+        P2PError::Io(err.to_string())
     }
 }
 

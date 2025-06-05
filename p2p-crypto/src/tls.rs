@@ -4,9 +4,10 @@ use std::sync::Arc;
 use std::io::{self, BufReader};
 use std::fs::File;
 use std::path::Path;
-use tokio::net::{TcpStream, TcpListener};
+use tokio::net::TcpStream;
 use tokio_rustls::{TlsAcceptor, TlsConnector, TlsStream};
 use rustls::{Certificate, PrivateKey, ServerConfig, ClientConfig, RootCertStore};
+use sha2::Digest;
 use rustls_pemfile::{certs, pkcs8_private_keys};
 use p2p_core::{PeerId, P2PResult, P2PError};
 use crate::{SecurityConfig, TlsVersion, CipherSuite};
@@ -86,7 +87,8 @@ impl TlsManager {
         let acceptor = self.create_acceptor();
         
         let tls_stream = acceptor.accept(tcp_stream).await
-            .map_err(|e| P2PError::Tls(format!("TLS accept failed: {}", e)))?;
+            .map_err(|e| P2PError::Tls(format!("TLS accept failed: {}", e)))?
+            .into();
         
         Ok(SecureTcpStream {
             stream: tls_stream,
@@ -107,7 +109,8 @@ impl TlsManager {
             .map_err(|e| P2PError::Tls(format!("Invalid server name: {}", e)))?;
         
         let tls_stream = connector.connect(server_name, tcp_stream).await
-            .map_err(|e| P2PError::Tls(format!("TLS connect failed: {}", e)))?;
+            .map_err(|e| P2PError::Tls(format!("TLS connect failed: {}", e)))?
+            .into();
         
         Ok(SecureTcpStream {
             stream: tls_stream,
@@ -231,34 +234,24 @@ fn create_server_config(
     ca_cert_path: Option<&Path>,
     security_config: &SecurityConfig,
 ) -> P2PResult<ServerConfig> {
-    let mut config = ServerConfig::builder()
-        .with_cipher_suites(get_cipher_suites(&security_config.allowed_ciphers))
-        .with_safe_default_kx_groups()
-        .with_protocol_versions(get_protocol_versions(security_config.min_tls_version))
-        .map_err(|e| P2PError::Tls(format!("Failed to create server config builder: {}", e)))?;
-    
-    // Configure client certificate verification if mTLS is required
-    if security_config.require_mtls {
-        if let Some(ca_path) = ca_cert_path {
-            let ca_certs = load_certificates(ca_path)?;
-            let mut root_store = RootCertStore::empty();
-            
-            for cert in ca_certs {
-                root_store.add(&cert)
-                    .map_err(|e| P2PError::Tls(format!("Failed to add CA certificate: {}", e)))?;
-            }
-            
-            config = config.with_client_cert_verifier(
-                rustls::server::AllowAnyAuthenticatedClient::new(root_store)
-            );
-        } else {
-            return Err(P2PError::Tls("mTLS requires CA certificate".to_string()));
+    let builder = ServerConfig::builder().with_safe_defaults();
+
+    let builder = if security_config.require_mtls {
+        let ca_path = ca_cert_path.ok_or_else(|| P2PError::Tls("mTLS requires CA certificate".into()))?;
+        let ca_certs = load_certificates(ca_path)?;
+        let mut root_store = RootCertStore::empty();
+        for cert in ca_certs {
+            root_store.add(&cert)
+                .map_err(|e| P2PError::Tls(format!("Failed to add CA certificate: {}", e)))?;
         }
+        builder.with_client_cert_verifier(
+            std::sync::Arc::new(rustls::server::AllowAnyAuthenticatedClient::new(root_store))
+        )
     } else {
-        config = config.with_no_client_auth();
-    }
-    
-    let server_config = config.with_single_cert(cert_chain, private_key)
+        builder.with_no_client_auth()
+    };
+
+    let server_config = builder.with_single_cert(cert_chain, private_key)
         .map_err(|e| P2PError::Tls(format!("Failed to configure server certificate: {}", e)))?;
     
     Ok(server_config)
@@ -274,15 +267,13 @@ fn create_client_config(
     let mut root_store = RootCertStore::empty();
     
     // Add system root certificates
-    root_store.add_server_trust_anchors(
-        webpki_roots::TLS_SERVER_ROOTS.0.iter().map(|ta| {
-            rustls::OwnedTrustAnchor::from_subject_spki_name_constraints(
-                ta.subject,
-                ta.spki,
-                ta.name_constraints,
-            )
-        })
-    );
+    root_store.add_trust_anchors(webpki_roots::TLS_SERVER_ROOTS.iter().map(|ta| {
+        rustls::OwnedTrustAnchor::from_subject_spki_name_constraints(
+            ta.subject,
+            ta.spki,
+            ta.name_constraints,
+        )
+    }));
     
     // Add custom CA certificates if provided
     if let Some(ca_path) = ca_cert_path {
@@ -293,21 +284,17 @@ fn create_client_config(
         }
     }
     
-    let mut config = ClientConfig::builder()
-        .with_cipher_suites(get_cipher_suites(&security_config.allowed_ciphers))
-        .with_safe_default_kx_groups()
-        .with_protocol_versions(get_protocol_versions(security_config.min_tls_version))
-        .map_err(|e| P2PError::Tls(format!("Failed to create client config builder: {}", e)))?
+    let builder = ClientConfig::builder()
+        .with_safe_defaults()
         .with_root_certificates(root_store);
-    
-    // Configure client certificate if mTLS is required
-    if security_config.require_mtls {
-        config = config.with_single_cert(cert_chain, private_key)
-            .map_err(|e| P2PError::Tls(format!("Failed to configure client certificate: {}", e)))?;
+
+    let config = if security_config.require_mtls {
+        builder.with_client_auth_cert(cert_chain, private_key)
+            .map_err(|e| P2PError::Tls(format!("Failed to configure client certificate: {}", e)))?
     } else {
-        config = config.with_no_client_auth();
-    }
-    
+        builder.with_no_client_auth()
+    };
+
     Ok(config)
 }
 
@@ -319,10 +306,18 @@ fn get_cipher_suites(allowed_ciphers: &[CipherSuite]) -> &'static [rustls::Suppo
 }
 
 /// Get protocol versions from configuration
+static PROTO_ALL: [&'static rustls::SupportedProtocolVersion; 2] = [
+    &rustls::version::TLS12,
+    &rustls::version::TLS13,
+];
+static PROTO_13: [&'static rustls::SupportedProtocolVersion; 1] = [
+    &rustls::version::TLS13,
+];
+
 fn get_protocol_versions(min_version: TlsVersion) -> &'static [&'static rustls::SupportedProtocolVersion] {
     match min_version {
-        TlsVersion::V1_2 => &[&rustls::version::TLS12, &rustls::version::TLS13],
-        TlsVersion::V1_3 => &[&rustls::version::TLS13],
+        TlsVersion::V1_2 => &PROTO_ALL,
+        TlsVersion::V1_3 => &PROTO_13,
     }
 }
 
