@@ -9,13 +9,13 @@ use stunclient::StunClient;
 use igd::aio::search_gateway;
 use igd::PortMappingProtocol;
 
+
 /// NAT traversal service
 pub struct NatTraversalService {
     local_addr: SocketAddr,
     stun_servers: Vec<String>,
     upnp_enabled: bool,
 }
-
 // Legacy STUN message type retained for backward compatibility (unused)
 #[allow(dead_code)]
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -23,6 +23,22 @@ pub enum StunMessage {
     BindingRequest { transaction_id: [u8; 12] },
     BindingResponse { transaction_id: [u8; 12], mapped_address: SocketAddr },
     BindingError { transaction_id: [u8; 12], error_code: u16, reason: String },
+/// STUN message types
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum StunMessage {
+    BindingRequest {
+        transaction_id: [u8; 12],
+    },
+    BindingResponse {
+        transaction_id: [u8; 12],
+        mapped_address: SocketAddr,
+    },
+    BindingError {
+        transaction_id: [u8; 12],
+        error_code: u16,
+        reason: String,
+    },
+
 }
 
 /// UPnP port mapping request
@@ -127,6 +143,7 @@ impl NatTraversalService {
             duration: Duration::from_secs(3600), // 1 hour
         };
 
+
         match search_gateway(Default::default()).await {
             Ok(gateway) => match gateway.get_external_ip().await {
                 Ok(ip) => {
@@ -184,6 +201,17 @@ impl NatTraversalService {
                 success: false,
                 error: Some(e.to_string()),
             },
+
+        
+        // Simulate UPnP discovery and mapping
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        
+        TraversalResult {
+            method: TraversalMethod::UPnP,
+            external_address: Some(self.local_addr), // Would be actual external address
+            success: true,
+            error: None,
+
         }
     }
     
@@ -216,6 +244,7 @@ impl NatTraversalService {
     
     /// Perform STUN request
     async fn stun_request(&self, stun_server: &str) -> P2PResult<SocketAddr> {
+
         let socket = UdpSocket::bind("0.0.0.0:0")
             .await
             .map_err(|e| P2PError::Network(format!("Failed to bind UDP socket: {}", e)))?;
@@ -229,11 +258,49 @@ impl NatTraversalService {
             .query_external_address_async(&socket)
             .await
             .map_err(|e| P2PError::Network(format!("STUN request failed: {}", e)))
+
+        let socket = UdpSocket::bind("0.0.0.0:0").await
+            .map_err(|e| P2PError::Network(format!("Failed to bind UDP socket: {}", e)))?;
+        
+        // Parse STUN server address
+        let server_addr: SocketAddr = stun_server.parse()
+            .map_err(|e| P2PError::Network(format!("Invalid STUN server address: {}", e)))?;
+        
+        // Create STUN binding request
+        let transaction_id = rand::random::<[u8; 12]>();
+        let request = StunMessage::BindingRequest { transaction_id };
+        
+        // Serialize and send request (placeholder)
+        let request_data = serde_json::to_vec(&request)?;
+        socket.send_to(&request_data, server_addr).await
+            .map_err(|e| P2PError::Network(format!("Failed to send STUN request: {}", e)))?;
+        
+        // Receive response with timeout
+        let mut buffer = [0u8; 1024];
+        let (len, _) = tokio::time::timeout(
+            Duration::from_secs(5),
+            socket.recv_from(&mut buffer)
+        ).await
+        .map_err(|_| P2PError::Timeout("STUN request timeout".to_string()))?
+        .map_err(|e| P2PError::Network(format!("Failed to receive STUN response: {}", e)))?;
+        
+        // Parse response (placeholder)
+        let response: StunMessage = serde_json::from_slice(&buffer[..len])?;
+        
+        match response {
+            StunMessage::BindingResponse { mapped_address, .. } => Ok(mapped_address),
+            StunMessage::BindingError { error_code, reason, .. } => {
+                Err(P2PError::Network(format!("STUN error {}: {}", error_code, reason)))
+            }
+            _ => Err(P2PError::Network("Unexpected STUN response".to_string())),
+        }
+
     }
     
     /// Attempt UDP hole punching
     async fn attempt_hole_punching(&self) -> TraversalResult {
         log::debug!("Attempting UDP hole punching");
+
 
         if let Some(server) = self.stun_servers.first() {
             match self.stun_request(server).await {
@@ -257,12 +324,24 @@ impl NatTraversalService {
                 success: false,
                 error: Some("No STUN servers configured".to_string()),
             }
-        }
+
+        
+        // Placeholder implementation
+        // Would coordinate with peer to punch holes through NAT
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        
+        TraversalResult {
+            method: TraversalMethod::HolePunching,
+            external_address: None,
+            success: false,
+            error: Some("Not implemented".to_string()),
+          }
     }
     
     /// Coordinate hole punching with a peer
     pub async fn coordinate_hole_punch(&self, peer_id: &PeerId, peer_addr: &PeerAddress) -> P2PResult<SocketAddr> {
         log::debug!("Coordinating hole punch with peer {:?} at {}", peer_id, peer_addr.address);
+
         let target: SocketAddr = format!("{}:{}", peer_addr.address, peer_addr.port)
             .parse()
             .map_err(|e| P2PError::Network(format!("Invalid peer address: {}", e)))?;
@@ -283,6 +362,10 @@ impl NatTraversalService {
             .map_err(|e| P2PError::Network(format!("Failed to receive punch response: {}", e)))?;
 
         Ok(addr)
+        
+        // Placeholder implementation
+        // Would implement the actual hole punching protocol
+        Err(P2PError::Network("Hole punching not implemented".to_string()))
     }
     
     /// Get recommended connection addresses
