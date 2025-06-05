@@ -4,3 +4,6 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
+p2p-core = { path = "../p2p-core" }
+p2p-network = { path = "../p2p-network" }
+tokio = { workspace = true }
