@@ -400,7 +400,7 @@ mod tests {
         
         assert!(constant_time_eq(a, b));
         assert!(!constant_time_eq(a, c));
-        assert!(!constant_time_eq(a, &b"short"));
+        assert!(!constant_time_eq(a, b"short"));
     }
 }
 
