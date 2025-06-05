@@ -3,7 +3,7 @@
 use std::sync::Arc;
 use std::time::{Duration, SystemTime};
 use serde::{Deserialize, Serialize};
-use zeroize::{Zeroize, ZeroizeOnDrop};
+use ed25519_dalek::{Signer, Verifier};
 use p2p_core::{PeerId, P2PResult, P2PError};
 
 pub mod tls;
@@ -64,10 +64,9 @@ pub enum CipherSuite {
     Aes128Gcm,
 }
 
-/// Cryptographic key material (zeroized on drop)
-#[derive(Clone, ZeroizeOnDrop)]
+/// Cryptographic key material
+#[derive(Debug, Clone)]
 pub struct KeyMaterial {
-    #[zeroize(skip)]
     pub key_type: KeyType,
     pub key_data: Vec<u8>,
     pub created_at: SystemTime,
@@ -256,7 +255,7 @@ impl AuthResponse {
     ) -> P2PResult<Self> {
         let mut message = Vec::new();
         message.extend_from_slice(&challenge.challenge_data);
-        message.extend_from_slice(peer_id.id().as_bytes());
+        message.extend_from_slice(peer_id.to_string().as_bytes());
         message.extend_from_slice(&challenge.timestamp.to_be_bytes());
         
         let signature = signing_key.sign(&message).to_bytes().to_vec();
@@ -287,7 +286,7 @@ impl AuthResponse {
         // Reconstruct the signed message
         let mut message = Vec::new();
         message.extend_from_slice(&challenge.challenge_data);
-        message.extend_from_slice(self.peer_id.id().as_bytes());
+        message.extend_from_slice(self.peer_id.to_string().as_bytes());
         message.extend_from_slice(&challenge.timestamp.to_be_bytes());
         
         // Verify signature

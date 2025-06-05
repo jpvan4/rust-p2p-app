@@ -29,6 +29,7 @@ chacha20poly1305 = "0.10"
 rustls = "0.21"
 rustls-pemfile = "1.0"
 tokio-rustls = "0.24"
+tokio = { workspace = true }
 
 # Certificate handling
 rcgen = "0.11"
