@@ -5,6 +5,9 @@ use std::time::Duration;
 use tokio::net::UdpSocket;
 use serde::{Deserialize, Serialize};
 use p2p_core::{PeerId, PeerAddress, AddressType, P2PResult, P2PError};
+use stunclient::StunClient;
+use igd::aio::search_gateway;
+use igd::PortMappingProtocol;
 
 /// NAT traversal service
 pub struct NatTraversalService {
@@ -13,21 +16,13 @@ pub struct NatTraversalService {
     upnp_enabled: bool,
 }
 
-/// STUN message types
+// Legacy STUN message type retained for backward compatibility (unused)
+#[allow(dead_code)]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum StunMessage {
-    BindingRequest {
-        transaction_id: [u8; 12],
-    },
-    BindingResponse {
-        transaction_id: [u8; 12],
-        mapped_address: SocketAddr,
-    },
-    BindingError {
-        transaction_id: [u8; 12],
-        error_code: u16,
-        reason: String,
-    },
+    BindingRequest { transaction_id: [u8; 12] },
+    BindingResponse { transaction_id: [u8; 12], mapped_address: SocketAddr },
+    BindingError { transaction_id: [u8; 12], error_code: u16, reason: String },
 }
 
 /// UPnP port mapping request
@@ -123,9 +118,7 @@ impl NatTraversalService {
     /// Try UPnP port mapping
     async fn try_upnp_mapping(&self) -> TraversalResult {
         log::debug!("Attempting UPnP port mapping");
-        
-        // Placeholder implementation - would use actual UPnP library
-        // For now, simulate a successful mapping
+
         let mapping = PortMapping {
             external_port: self.local_addr.port(),
             internal_port: self.local_addr.port(),
@@ -133,15 +126,64 @@ impl NatTraversalService {
             description: "P2P Application".to_string(),
             duration: Duration::from_secs(3600), // 1 hour
         };
-        
-        // Simulate UPnP discovery and mapping
-        tokio::time::sleep(Duration::from_millis(100)).await;
-        
-        TraversalResult {
-            method: TraversalMethod::UPnP,
-            external_address: Some(self.local_addr), // Would be actual external address
-            success: true,
-            error: None,
+
+        match search_gateway(Default::default()).await {
+            Ok(gateway) => match gateway.get_external_ip().await {
+                Ok(ip) => {
+                    let protocol = match mapping.protocol {
+                        Protocol::TCP => PortMappingProtocol::TCP,
+                        Protocol::UDP => PortMappingProtocol::UDP,
+                    };
+
+                    let internal_v4 = match self.local_addr {
+                        SocketAddr::V4(v4) => v4,
+                        SocketAddr::V6(_) => {
+                            return TraversalResult {
+                                method: TraversalMethod::UPnP,
+                                external_address: None,
+                                success: false,
+                                error: Some("UPnP only supports IPv4 addresses".to_string()),
+                            };
+                        }
+                    };
+
+                    match gateway
+                        .add_port(
+                            protocol,
+                            mapping.external_port,
+                            internal_v4,
+                            mapping.duration.as_secs() as u32,
+                            &mapping.description,
+                        )
+                        .await
+                    {
+                        Ok(()) => TraversalResult {
+                            method: TraversalMethod::UPnP,
+                            external_address: Some(SocketAddr::new(IpAddr::V4(ip), mapping.external_port)),
+                            success: true,
+                            error: None,
+                        },
+                        Err(e) => TraversalResult {
+                            method: TraversalMethod::UPnP,
+                            external_address: None,
+                            success: false,
+                            error: Some(e.to_string()),
+                        },
+                    }
+                }
+                Err(e) => TraversalResult {
+                    method: TraversalMethod::UPnP,
+                    external_address: None,
+                    success: false,
+                    error: Some(e.to_string()),
+                },
+            },
+            Err(e) => TraversalResult {
+                method: TraversalMethod::UPnP,
+                external_address: None,
+                success: false,
+                error: Some(e.to_string()),
+            },
         }
     }
     
@@ -174,66 +216,73 @@ impl NatTraversalService {
     
     /// Perform STUN request
     async fn stun_request(&self, stun_server: &str) -> P2PResult<SocketAddr> {
-        let socket = UdpSocket::bind("0.0.0.0:0").await
+        let socket = UdpSocket::bind("0.0.0.0:0")
+            .await
             .map_err(|e| P2PError::Network(format!("Failed to bind UDP socket: {}", e)))?;
-        
-        // Parse STUN server address
-        let server_addr: SocketAddr = stun_server.parse()
+
+        let server_addr: SocketAddr = stun_server
+            .parse()
             .map_err(|e| P2PError::Network(format!("Invalid STUN server address: {}", e)))?;
-        
-        // Create STUN binding request
-        let transaction_id = rand::random::<[u8; 12]>();
-        let request = StunMessage::BindingRequest { transaction_id };
-        
-        // Serialize and send request (placeholder)
-        let request_data = serde_json::to_vec(&request)?;
-        socket.send_to(&request_data, server_addr).await
-            .map_err(|e| P2PError::Network(format!("Failed to send STUN request: {}", e)))?;
-        
-        // Receive response with timeout
-        let mut buffer = [0u8; 1024];
-        let (len, _) = tokio::time::timeout(
-            Duration::from_secs(5),
-            socket.recv_from(&mut buffer)
-        ).await
-        .map_err(|_| P2PError::Timeout("STUN request timeout".to_string()))?
-        .map_err(|e| P2PError::Network(format!("Failed to receive STUN response: {}", e)))?;
-        
-        // Parse response (placeholder)
-        let response: StunMessage = serde_json::from_slice(&buffer[..len])?;
-        
-        match response {
-            StunMessage::BindingResponse { mapped_address, .. } => Ok(mapped_address),
-            StunMessage::BindingError { error_code, reason, .. } => {
-                Err(P2PError::Network(format!("STUN error {}: {}", error_code, reason)))
-            }
-            _ => Err(P2PError::Network("Unexpected STUN response".to_string())),
-        }
+
+        let client = StunClient::new(server_addr);
+        client
+            .query_external_address_async(&socket)
+            .await
+            .map_err(|e| P2PError::Network(format!("STUN request failed: {}", e)))
     }
     
     /// Attempt UDP hole punching
     async fn attempt_hole_punching(&self) -> TraversalResult {
         log::debug!("Attempting UDP hole punching");
-        
-        // Placeholder implementation
-        // Would coordinate with peer to punch holes through NAT
-        tokio::time::sleep(Duration::from_millis(50)).await;
-        
-        TraversalResult {
-            method: TraversalMethod::HolePunching,
-            external_address: None,
-            success: false,
-            error: Some("Not implemented".to_string()),
+
+        if let Some(server) = self.stun_servers.first() {
+            match self.stun_request(server).await {
+                Ok(addr) => TraversalResult {
+                    method: TraversalMethod::HolePunching,
+                    external_address: Some(addr),
+                    success: true,
+                    error: None,
+                },
+                Err(e) => TraversalResult {
+                    method: TraversalMethod::HolePunching,
+                    external_address: None,
+                    success: false,
+                    error: Some(e.to_string()),
+                },
+            }
+        } else {
+            TraversalResult {
+                method: TraversalMethod::HolePunching,
+                external_address: None,
+                success: false,
+                error: Some("No STUN servers configured".to_string()),
+            }
         }
     }
     
     /// Coordinate hole punching with a peer
     pub async fn coordinate_hole_punch(&self, peer_id: &PeerId, peer_addr: &PeerAddress) -> P2PResult<SocketAddr> {
         log::debug!("Coordinating hole punch with peer {:?} at {}", peer_id, peer_addr.address);
-        
-        // Placeholder implementation
-        // Would implement the actual hole punching protocol
-        Err(P2PError::Network("Hole punching not implemented".to_string()))
+        let target: SocketAddr = format!("{}:{}", peer_addr.address, peer_addr.port)
+            .parse()
+            .map_err(|e| P2PError::Network(format!("Invalid peer address: {}", e)))?;
+
+        let socket = UdpSocket::bind(self.local_addr)
+            .await
+            .map_err(|e| P2PError::Network(format!("Failed to bind UDP socket: {}", e)))?;
+
+        socket
+            .send_to(b"punch", target)
+            .await
+            .map_err(|e| P2PError::Network(format!("Failed to send punch packet: {}", e)))?;
+
+        let mut buf = [0u8; 16];
+        let (_len, addr) = tokio::time::timeout(Duration::from_secs(5), socket.recv_from(&mut buf))
+            .await
+            .map_err(|_| P2PError::Timeout("Hole punch timeout".to_string()))?
+            .map_err(|e| P2PError::Network(format!("Failed to receive punch response: {}", e)))?;
+
+        Ok(addr)
     }
     
     /// Get recommended connection addresses
